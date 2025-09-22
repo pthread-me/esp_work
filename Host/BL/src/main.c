@@ -36,23 +36,14 @@ int main(){
 		exit(errno);
 	}
 
+/*	
+	printf("\n\nRead %d\n\n", ii_count);
 	
-	printf("Read %d\n", ii_count);
-	
-	
-	printf("\n\n");
 	uint8_t* pointer = (uint8_t*) ii;
 	for(int i=0; i<sizeof(extended_inquiry_info); i++){
 		printf("%2.2x ", pointer[i]);	
 	}		
-
-	/*
-	char *addr_str = calloc(32, sizeof(char));
-	ba2str(&ii->bdaddr, addr_str);
-	printf("%s\n", addr_str);
 */
-
-
 	free(ii);
 	
 	fprintf(stdout, "Done\n");
