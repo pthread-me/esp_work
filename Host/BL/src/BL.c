@@ -8,20 +8,27 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define BA_AS_STR_SIZE 18
 
-int hci_extended_inquiry(int dev_id, int inquiry_len, uint8_t nrsp, const uint8_t* lap, 
-		extended_inquiry_info** ii, long flags)
-{
+int hci_extended_inquiry(int dev_id, uint8_t inquiry_len, uint8_t nrsp, const uint8_t* lap, 
+		extended_inquiry_info** ii){
 	
 	int dd;										//	device descriptor -> aka socket fd
-	int ret;
-	uint8_t dev_mode = -1;		//	init dev_mode
+	int recieved = 0;					// # of EIR recieved
+	uint8_t dev_mode = 0;			//	init dev_mode
 	int time_out = 1000;
 
 	struct hci_filter filter;	// socket filter
 	inquiry_cp *ir;						// inquiry request parameter
+	
 	uint8_t *buf;
+	size_t buf_size = (EXTENDED_INQUIRY_INFO_SIZE + HCI_META_DATA_SIZE);
+	hci_meta_data meta_data;
+
+	
+	if(*ii == NULL){
+		printf("init ii\n");
+		*ii = calloc(nrsp, EXTENDED_INQUIRY_INFO_SIZE);
+	}
 
 
 	if((dd=hci_open_dev(dev_id)) < 0){
@@ -29,12 +36,11 @@ int hci_extended_inquiry(int dev_id, int inquiry_len, uint8_t nrsp, const uint8_
 		return -1;
 	}
 
+	
 	if(hci_read_inquiry_mode(dd, &dev_mode, time_out)<0){
-
 		fprintf(stderr, "Error while checking dev inquiry mode\n");
 		return -1;
 	}
-
 
 	if(dev_mode != 2){
 		if(hci_write_inquiry_mode(dd, 2, time_out)<0){
@@ -42,11 +48,7 @@ int hci_extended_inquiry(int dev_id, int inquiry_len, uint8_t nrsp, const uint8_
 			return -1;
 		}
 	}
-
-
-
-	buf = malloc(HCI_MAX_EIR_LENGTH * nrsp);	
-	memset(buf, 0, HCI_MAX_EIR_LENGTH*nrsp);
+ 
 	ir  = calloc(1, sizeof(inquiry_cp));
 
 	// Lower Adderess Part, copied as in bluez hci_inquiry
@@ -60,9 +62,11 @@ int hci_extended_inquiry(int dev_id, int inquiry_len, uint8_t nrsp, const uint8_
 	ir->num_rsp = nrsp;
 	ir->length = inquiry_len;
 
+	
+	// clearing hci cache, equivalent to hci_inquiry with the IREQ_CACHE_FLUSH flag
+	hci_send_cmd(dd, OGF_HOST_CTL, OCF_FLUSH, 0, NULL);
 
-
-
+	// filtering for inq extended and complete packets 
 	hci_filter_clear(&filter);
 	hci_filter_set_ptype(HCI_EVENT_PKT, &filter);
 	hci_filter_set_event(EVT_EXTENDED_INQUIRY_RESULT,  &filter);
@@ -70,37 +74,41 @@ int hci_extended_inquiry(int dev_id, int inquiry_len, uint8_t nrsp, const uint8_
 	setsockopt(dd, SOL_HCI, HCI_FILTER, &filter, sizeof(filter));
 
 	hci_send_cmd(dd, OGF_LINK_CTL, OCF_INQUIRY, sizeof(*ir), ir);
-
-
-	read(dd, buf, HCI_MAX_EIR_LENGTH);
 	
-	
-	printf("%2.2X\n", buf[1]);
-	for(int i=1; (i<HCI_MAX_EIR_LENGTH*nrsp) && buf[i]==EVT_EXTENDED_INQUIRY_RESULT;
-			i+=HCI_MAX_EIR_LENGTH){
-	
-		// start of EIR
-		int j = i+3;
 
-		extended_inquiry_info *eir = (extended_inquiry_info*) &buf[j];
-		char *addr_str = calloc(BA_AS_STR_SIZE, sizeof(char));
+	buf = malloc(buf_size);
+	memset(buf, 0, buf_size);
 
-		ba2str(&eir->bdaddr, addr_str);
-		memcpy(&addr_str[17], "\0", 1);
-		printf("Addr: %s\n", addr_str);
-
-		uint8_t *data = eir->data;
-		printf("data:\n");
-		for(int k=0; k<HCI_MAX_EIR_LENGTH; k++){
-			printf("%2.2X ", data[k]);
+	for(int i=0; i<nrsp; i++){
+		read(dd, buf, EXTENDED_INQUIRY_INFO_SIZE+HCI_META_DATA_SIZE);
+		memcpy(&meta_data, buf, HCI_META_DATA_SIZE);
+		
+		if(meta_data.hci_packet_type != HCI_EVENT_PKT){
+			fprintf(stderr, "Expected packet type: 0x04 (HCI_EVENT_PKT) but recieved: %2.2X\n.", meta_data.hci_packet_type);
+			free(ir);
+			hci_close_dev(dd);
+			return -1;
 		}
-		printf("\n");
-	}
+		
+		if(meta_data.hci_event_code == EVT_INQUIRY_COMPLETE){
+			break;
+		}else if(meta_data.hci_event_code != EVT_EXTENDED_INQUIRY_RESULT){
+			fprintf(stderr, "Expected event type: 0x2F (HCI_EXTENDED_INQUIRY_RESULT) but recieved: %2.2X\n.", meta_data.hci_event_code);
+			free(ir);
+			hci_close_dev(dd);
+			return -1;
+		}
+	
 
+		memcpy(&(*ii)[i], &(buf[HCI_META_DATA_SIZE]), EXTENDED_INQUIRY_INFO_SIZE);
+		recieved += 1;
+	}
+		
+	
 	free(buf);
 	free(ir);
 	hci_close_dev(dd);
 	
-	return ret;
+	return recieved;
 	
 }
